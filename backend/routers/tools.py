@@ -85,7 +85,30 @@ async def api_geocode_reverse(
     return await asyncio.to_thread(reverse_geocode, lat, lng, local_only)
 
 
-@router.get("/api/sentinel2/search")
+# ── Sentinel proxy routes (Issue #299/#300/#301, reported by tg12) ──────────
+# These three endpoints relay external Sentinel / Planetary Computer
+# requests through the backend to avoid browser CORS blocks. They are
+# operator-only helpers — they MUST NOT be callable by anonymous remote
+# users, because:
+#
+#   * /api/sentinel/token  — caller supplies their own Sentinel client_id +
+#     client_secret. Without operator gating, the backend becomes a free
+#     anonymous OAuth-mint relay for any Copernicus account.
+#   * /api/sentinel/tile   — same shape as the token route but for tile
+#     imagery. Without gating, the backend acts as an anonymous quota and
+#     bandwidth relay for Sentinel Hub Process API calls.
+#   * /api/sentinel2/search — hits the Planetary Computer STAC search API
+#     and falls back to Esri imagery. No caller credentials are involved,
+#     but the route is still an anonymous external-search relay. We gate
+#     it the same way for consistency with the rest of the operator-only
+#     helper surface.
+#
+# Gating is via require_local_operator (loopback / bridge / admin key),
+# matching the same allowlist already used by /api/region-dossier and
+# the other operator helpers further up this file. Single-operator nodes
+# see no behavior change — their dashboard already lives on loopback or
+# the trusted Docker bridge, so it still resolves.
+@router.get("/api/sentinel2/search", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 def api_sentinel2_search(
     request: Request,
@@ -113,6 +136,9 @@ def api_sentinel2_search(
 #
 # The frontend in ``sentinelHub.ts`` no longer reads browser storage and no
 # longer forwards credentials — every dashboard request now lands in (2).
+# The require_local_operator gate (added in #303/PR #303) stays — both layers
+# are independent: the gate blocks anonymous callers, the env fallback lets
+# legitimate (gated) callers omit credentials from the body.
 # ---------------------------------------------------------------------------
 def _resolve_sentinel_credentials(body_id: str, body_secret: str) -> tuple[str, str]:
     """Return (client_id, client_secret) using body values when present,
@@ -123,7 +149,7 @@ def _resolve_sentinel_credentials(body_id: str, body_secret: str) -> tuple[str, 
     return cid, csec
 
 
-@router.post("/api/sentinel/token")
+@router.post("/api/sentinel/token", dependencies=[Depends(require_local_operator)])
 @limiter.limit("60/minute")
 async def api_sentinel_token(request: Request):
     """Proxy Copernicus CDSE OAuth2 token request (avoids browser CORS block).
@@ -191,7 +217,7 @@ import os as _os
 _SH_TOKEN_CACHE_HMAC_KEY = _os.urandom(32)
 
 
-@router.post("/api/sentinel/tile")
+@router.post("/api/sentinel/tile", dependencies=[Depends(require_local_operator)])
 @limiter.limit("300/minute")
 async def api_sentinel_tile(request: Request):
     """Proxy Sentinel Hub Process API tile request (avoids CORS block)."""
