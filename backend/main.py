@@ -1417,6 +1417,29 @@ def _peer_sync_response(peer_url: str, body: dict[str, Any]) -> dict[str, Any]:
         proxy = f"socks5h://127.0.0.1:{socks_port}"
         kwargs["proxies"] = {"http": proxy, "https": proxy}
     response = _requests.post(f"{normalized}/api/mesh/infonet/sync", **kwargs)
+    # HTTP 429 must be surfaced as a typed exception carrying the
+    # Retry-After value, so finish_sync can honor it and stop hammering
+    # the upstream. Pre-fix this path just stringified the status into
+    # a ValueError, which finish_sync then ignored — keeping the
+    # upstream's rate-limit bucket full indefinitely.
+    if response.status_code == 429:
+        from services.mesh.mesh_infonet_sync_support import (
+            PeerSyncRateLimited,
+            parse_retry_after_header,
+        )
+
+        retry_after_s = parse_retry_after_header(
+            response.headers.get("Retry-After", "") or "",
+        )
+        try:
+            body_text = response.text[:200]
+        except Exception:
+            body_text = ""
+        raise PeerSyncRateLimited(
+            f"HTTP 429 from {normalized} (retry_after={retry_after_s}s): {body_text}",
+            retry_after_s=retry_after_s,
+            status=429,
+        )
     try:
         payload = response.json()
     except Exception as exc:
@@ -1462,8 +1485,23 @@ def _hydrate_gate_store_from_chain(events: list[dict]) -> int:
     return count
 
 
-def _sync_from_peer(peer_url: str, *, page_limit: int = 100, max_rounds: int = 5) -> tuple[bool, str, bool]:
+def _sync_from_peer(
+    peer_url: str,
+    *,
+    page_limit: int = 100,
+    max_rounds: int = 5,
+) -> tuple[bool, str, bool, int]:
+    """Sync the local Infonet chain against ``peer_url``.
+
+    Returns ``(ok, error, forked, retry_after_s)``. The fourth tuple
+    element is non-zero only when the peer responded with HTTP 429
+    and supplied a parseable ``Retry-After`` header — see the typed
+    ``PeerSyncRateLimited`` exception in mesh_infonet_sync_support.py.
+    Callers should pass that value to ``finish_sync(retry_after_s=...)``
+    so the next attempt actually waits.
+    """
     from services.mesh.mesh_hashchain import infonet
+    from services.mesh.mesh_infonet_sync_support import PeerSyncRateLimited
 
     rounds = 0
     while rounds < max_rounds:
@@ -1472,7 +1510,11 @@ def _sync_from_peer(peer_url: str, *, page_limit: int = 100, max_rounds: int = 5
             "locator": infonet.get_locator(),
             "limit": page_limit,
         }
-        payload = _peer_sync_response(peer_url, body)
+        try:
+            payload = _peer_sync_response(peer_url, body)
+        except PeerSyncRateLimited as exc:
+            # Bubble up the retry-after so finish_sync can honor it.
+            return False, str(exc), False, exc.retry_after_s
         if bool(payload.get("forked")):
             # Auto-recover small local forks: if the local chain is tiny
             # (< 20 events) and the remote has a longer chain, reset local
@@ -1488,23 +1530,23 @@ def _sync_from_peer(peer_url: str, *, page_limit: int = 100, max_rounds: int = 5
                 )
                 infonet.reset_chain()
                 continue  # retry sync with clean genesis locator
-            return False, "fork detected", True
+            return False, "fork detected", True, 0
         events = payload.get("events", [])
         if not isinstance(events, list):
-            return False, "peer sync events must be a list", False
+            return False, "peer sync events must be a list", False, 0
         if not events:
-            return True, "", False
+            return True, "", False, 0
         result = infonet.ingest_events(events)
         _hydrate_gate_store_from_chain(events)
         rejected = list(result.get("rejected", []) or [])
         if rejected:
-            return False, f"sync ingest rejected {len(rejected)} event(s)", False
+            return False, f"sync ingest rejected {len(rejected)} event(s)", False, 0
         if int(result.get("accepted", 0) or 0) == 0 and int(result.get("duplicates", 0) or 0) >= len(events):
-            return True, "", False
+            return True, "", False, 0
         if len(events) < page_limit:
-            return True, "", False
+            return True, "", False, 0
         rounds += 1
-    return True, "", False
+    return True, "", False, 0
 
 
 def _run_public_sync_cycle() -> SyncWorkerState:
@@ -1567,11 +1609,12 @@ def _run_public_sync_cycle() -> SyncWorkerState:
         with _NODE_RUNTIME_LOCK:
             set_sync_state(started)
         try:
-            ok, error, forked = _sync_from_peer(record.peer_url)
+            ok, error, forked, retry_after_s = _sync_from_peer(record.peer_url)
         except Exception as exc:
             ok = False
             error = str(exc or type(exc).__name__)
             forked = False
+            retry_after_s = 0
         if ok:
             store.mark_seen(record.peer_url, "sync", now=time.time())
             store.mark_sync_success(record.peer_url, now=time.time())
@@ -1618,6 +1661,12 @@ def _run_public_sync_cycle() -> SyncWorkerState:
             now=time.time(),
             interval_s=int(get_settings().MESH_SYNC_INTERVAL_S or 300),
             failure_backoff_s=failure_backoff_s,
+            # 429 retry-storm fix: when the peer returned HTTP 429 with
+            # a Retry-After header, finish_sync uses max(exponential,
+            # retry_after) for next_sync_due_at — so we actually wait
+            # the time the upstream asked for instead of hammering
+            # every 60s and keeping its rate-limit bucket full forever.
+            retry_after_s=retry_after_s,
         )
         with _NODE_RUNTIME_LOCK:
             set_sync_state(updated)
