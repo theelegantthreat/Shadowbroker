@@ -1325,7 +1325,7 @@ const SettingsPanel = React.memo(function SettingsPanel({
                 className={`flex-1 px-4 py-2.5 text-sm font-mono tracking-widest font-bold transition-colors flex items-center justify-center gap-1.5 ${activeTab === 'sentinel' ? 'text-purple-400 border-b-2 border-purple-500 bg-purple-950/10' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
               >
                 <Satellite size={10} />
-                {t('settings.shodan').toUpperCase()}
+                SENTINEL
               </button>
               <button
                 onClick={() => setActiveTab('sar')}

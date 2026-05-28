@@ -110,6 +110,111 @@ describe('proxy CSRF guard on admin-key injection (#249/#254)', () => {
     expect(capturedHeaders(fetchMock).get('X-Admin-Key')).toBe(ADMIN_KEY);
   });
 
+  it('same-origin request behind a reverse proxy uses X-Forwarded-Host for injection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const req = new NextRequest('http://frontend:3000/api/settings/api-keys', {
+      method: 'GET',
+      headers: {
+        host: 'frontend:3000',
+        origin: 'https://shadowbroker.example',
+        'x-forwarded-host': 'shadowbroker.example',
+      },
+    });
+    await proxyGet(req, {
+      params: Promise.resolve({ path: ['settings', 'api-keys'] }),
+    });
+
+    expect(capturedHeaders(fetchMock).get('X-Admin-Key')).toBe(ADMIN_KEY);
+  });
+
+  it('same-origin request behind a Docker bridge proxy can use a private Host with X-Forwarded-Host', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const req = new NextRequest('http://172.18.0.3:3000/api/settings/api-keys', {
+      method: 'GET',
+      headers: {
+        host: '172.18.0.3:3000',
+        origin: 'https://shadowbroker.example',
+        'x-forwarded-host': 'shadowbroker.example',
+      },
+    });
+    await proxyGet(req, {
+      params: Promise.resolve({ path: ['settings', 'api-keys'] }),
+    });
+
+    expect(capturedHeaders(fetchMock).get('X-Admin-Key')).toBe(ADMIN_KEY);
+  });
+
+  it('same-origin request behind a reverse proxy uses Forwarded host for injection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const req = new NextRequest('http://frontend:3000/api/tools/shodan/status', {
+      method: 'GET',
+      headers: {
+        host: 'frontend:3000',
+        origin: 'https://shadowbroker.example',
+        forwarded: 'for=172.18.0.1;proto=https;host="shadowbroker.example"',
+      },
+    });
+    await proxyGet(req, {
+      params: Promise.resolve({ path: ['tools', 'shodan', 'status'] }),
+    });
+
+    expect(capturedHeaders(fetchMock).get('X-Admin-Key')).toBe(ADMIN_KEY);
+  });
+
+  it('cross-origin request cannot spoof same-origin with X-Forwarded-Host on a public Host', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const req = new NextRequest('https://shadowbroker.example/api/settings/api-keys', {
+      method: 'GET',
+      headers: {
+        host: 'shadowbroker.example',
+        origin: 'https://evil.example',
+        'x-forwarded-host': 'evil.example',
+      },
+    });
+    await proxyGet(req, {
+      params: Promise.resolve({ path: ['settings', 'api-keys'] }),
+    });
+
+    expect(capturedHeaders(fetchMock).get('X-Admin-Key')).toBeNull();
+  });
+
+  it('cross-origin request cannot spoof same-origin with X-Forwarded-Host on localhost', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const req = new NextRequest('http://localhost:3000/api/settings/api-keys', {
+      method: 'GET',
+      headers: {
+        host: 'localhost:3000',
+        origin: 'https://evil.example',
+        'x-forwarded-host': 'evil.example',
+      },
+    });
+    await proxyGet(req, {
+      params: Promise.resolve({ path: ['settings', 'api-keys'] }),
+    });
+
+    expect(capturedHeaders(fetchMock).get('X-Admin-Key')).toBeNull();
+  });
+
   it('no Origin header (native shell, server-to-server, curl) DOES inject X-Admin-Key', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),

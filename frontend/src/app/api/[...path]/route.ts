@@ -77,6 +77,72 @@ function isSensitiveProxyPath(pathSegments: string[]): boolean {
   return false;
 }
 
+function normalizeHeaderHost(host: string | null): string {
+  return (host || '').trim().replace(/^"|"$/g, '').toLowerCase();
+}
+
+function hostnameFromHeaderHost(host: string): string {
+  const normalized = normalizeHeaderHost(host);
+  if (!normalized) return '';
+  try {
+    return new URL(`http://${normalized}`).hostname.toLowerCase();
+  } catch {
+    return normalized.replace(/:\d+$/, '').toLowerCase();
+  }
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const parts = hostname.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [first, second] = parts;
+  return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
+}
+
+function isInternalProxyHost(host: string): boolean {
+  const hostname = hostnameFromHeaderHost(host);
+  if (!hostname || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return false;
+  }
+  return (
+    !hostname.includes('.') ||
+    isPrivateIpv4(hostname) ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.docker')
+  );
+}
+
+function forwardedHostCandidates(req: NextRequest): string[] {
+  const hosts = new Set<string>();
+  const directHost = normalizeHeaderHost(req.headers.get('host'));
+  if (directHost) hosts.add(directHost);
+
+  if (!isInternalProxyHost(directHost)) {
+    return [...hosts];
+  }
+
+  const forwardedHost = req.headers.get('x-forwarded-host');
+  if (forwardedHost) {
+    for (const value of forwardedHost.split(',')) {
+      const host = normalizeHeaderHost(value);
+      if (host) hosts.add(host);
+    }
+  }
+
+  const forwarded = req.headers.get('forwarded');
+  if (forwarded) {
+    const hostPattern = /(?:^|[;,])\s*host=(?:"([^"]+)"|([^;,]+))/gi;
+    let match: RegExpExecArray | null;
+    while ((match = hostPattern.exec(forwarded)) !== null) {
+      const host = normalizeHeaderHost(match[1] || match[2] || '');
+      if (host) hosts.add(host);
+    }
+  }
+
+  return [...hosts];
+}
+
 /**
  * CSRF guard for the server-side admin-key injection (issues #249 / #254).
  *
@@ -91,8 +157,10 @@ function isSensitiveProxyPath(pathSegments: string[]): boolean {
  *   - The request carries a valid admin session cookie (already auth'd)
  *   - The Origin header is absent (server-to-server fetch, Tauri/Electron
  *     native shells, curl/cli — none of these are browser-CSRF surfaces)
- *   - The Origin header host matches the request's own Host (genuine
- *     same-origin browser fetch from our own dashboard)
+ *   - The Origin header host matches the request's own Host or, when the
+ *     direct Host is an internal service name, a reverse proxy's forwarded
+ *     host (genuine same-origin browser fetch from our own dashboard,
+ *     including Docker/Traefik deployments where Host is internal)
  *
  * If Origin is present AND doesn't match Host, the caller is a hostile
  * cross-origin webpage. We refuse to inject the admin key. The backend
@@ -110,9 +178,9 @@ function isSameOriginOrNonBrowser(req: NextRequest): boolean {
   }
   try {
     const originUrl = new URL(origin);
-    const host = req.headers.get('host') || '';
-    if (!host) return false;
-    return originUrl.host.toLowerCase() === host.toLowerCase();
+    const originHost = normalizeHeaderHost(originUrl.host);
+    if (!originHost) return false;
+    return forwardedHostCandidates(req).includes(originHost);
   } catch {
     // Malformed Origin header — be conservative.
     return false;
