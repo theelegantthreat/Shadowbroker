@@ -199,6 +199,7 @@ graphify-out/
 # ========================
 docs/*
 !docs/OUTBOUND_DATA.md
+!docs/production-hardening.md
 !docs/mesh/
 docs/mesh/*
 !docs/mesh/threat-model.md
