@@ -4,9 +4,10 @@ services:
   backend:
     environment:
       MESH_ONLY: "${MESH_ONLY:-false}"
-      SHADOWBROKER_MESH_NODE_RUNTIME: "true"
+      SHADOWBROKER_MESH_NODE_RUNTIME: "${SHADOWBROKER_MESH_NODE_RUNTIME:-true}"
       MESH_ARTI_ENABLED: "true"
-      MESH_INFONET_FLEET_JOIN: "true"
+      MESH_INFONET_FLEET_JOIN: "${MESH_INFONET_FLEET_JOIN:-true}"
+      MESH_INFONET_FLEET_JOIN_DISABLED: "${MESH_INFONET_FLEET_JOIN_DISABLED:-false}"
       MESH_WORMHOLE_TRUST_FILE_READY: "true"
       PRIVACY_CORE_ALLOWED_SHA256: "5dd4b65a317277917842b12d7b430d49913789982ba906bd9a0ea6006d40e28a"
       MESH_RELAY_PUSH_TIMEOUT_S: "300"
@@ -17,5 +18,5 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1"
-          memory: 2G
+          cpus: "2"
+          memory: 4G
