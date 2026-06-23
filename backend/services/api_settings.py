@@ -79,6 +79,15 @@ API_REGISTRY = [
         "required": False,
     },
     {
+        "id": "firms_map_key",
+        "env_key": "FIRMS_MAP_KEY",
+        "name": "NASA FIRMS — MAP Key (optional)",
+        "description": "Optional NASA Earthdata MAP key for country-scoped VIIRS fire enrichment. Global VIIRS hotspots work without a key; set this only if you want per-country FIRMS detail. Free from NASA Earthdata.",
+        "category": "Geophysical",
+        "url": "https://firms.modaps.eosdis.nasa.gov/api/area/",
+        "required": False,
+    },
+    {
         "id": "celestrak",
         "env_key": None,
         "name": "CelesTrak (NORAD TLEs)",

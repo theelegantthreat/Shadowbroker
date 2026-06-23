@@ -1,13 +1,23 @@
 """Immediate data refresh when the operator enables a map layer.
 
-Runs synchronously inside POST /api/layers so the frontend's post-toggle
-live-data refetch sees populated payloads (T_toggle_visible guardrail).
+Disk/local fetches run inline (milliseconds). Network-heavy fetches run on the
+slow executor so POST /api/layers never blocks the single uvicorn worker for
+tens of seconds (which freezes bootstrap + live-data and makes the map go black).
 """
 from __future__ import annotations
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Inline — local DB / static files only.
+_INSTANT_LAYER_KEYS: frozenset[str] = frozenset(
+    {"cctv", "power_plants", "datacenters"}
+)
+# Background — network-bound; may take seconds.
+_SLOW_LAYER_KEYS: frozenset[str] = frozenset(
+    {"firms", "psk_reporter", "fishing_activity"}
+)
 
 
 def snapshot_active_layers() -> dict[str, bool]:
@@ -16,26 +26,36 @@ def snapshot_active_layers() -> dict[str, bool]:
     return dict(active_layers)
 
 
-def refresh_newly_enabled_layers(before: dict[str, bool]) -> None:
-    """Fetch any layers that transitioned off → on."""
-    from services.fetchers._store import active_layers, bump_data_version
+def _was_off_now_on(before: dict[str, bool], key: str) -> bool:
+    from services.fetchers._store import active_layers
 
-    refreshed = False
+    return not bool(before.get(key, False)) and bool(active_layers.get(key, False))
 
-    def _enabled(key: str) -> bool:
-        return bool(active_layers.get(key, False))
 
-    def _was_off_now_on(key: str) -> bool:
-        return not bool(before.get(key, False)) and _enabled(key)
-
-    if _was_off_now_on("cctv"):
+def _instant_fetch(key: str) -> None:
+    if key == "cctv":
         from services.fetchers.infrastructure import fetch_cctv
 
         fetch_cctv()
-        refreshed = True
         logger.info("CCTV loaded (layer enabled)")
+        return
+    if key == "power_plants":
+        from services.fetchers.infrastructure import fetch_power_plants
 
-    if _was_off_now_on("firms"):
+        fetch_power_plants()
+        logger.info("Power plants loaded (layer enabled)")
+        return
+    if key == "datacenters":
+        from services.fetchers.infrastructure import fetch_datacenters
+
+        fetch_datacenters()
+        logger.info("Datacenters loaded (layer enabled)")
+        return
+    raise KeyError(key)
+
+
+def _slow_fetch(key: str) -> None:
+    if key == "firms":
         from services.fetchers.earth_observation import (
             fetch_firms_country_fires,
             fetch_firms_fires,
@@ -43,36 +63,61 @@ def refresh_newly_enabled_layers(before: dict[str, bool]) -> None:
 
         fetch_firms_fires()
         fetch_firms_country_fires()
-        refreshed = True
         logger.info("FIRMS fires loaded (layer enabled)")
-
-    if _was_off_now_on("power_plants"):
-        from services.fetchers.infrastructure import fetch_power_plants
-
-        fetch_power_plants()
-        refreshed = True
-        logger.info("Power plants loaded (layer enabled)")
-
-    if _was_off_now_on("psk_reporter"):
+        return
+    if key == "psk_reporter":
         from services.fetchers.infrastructure import fetch_psk_reporter
 
         fetch_psk_reporter()
-        refreshed = True
         logger.info("PSK Reporter loaded (layer enabled)")
-
-    if _was_off_now_on("datacenters"):
-        from services.fetchers.infrastructure import fetch_datacenters
-
-        fetch_datacenters()
-        refreshed = True
-        logger.info("Datacenters loaded (layer enabled)")
-
-    if _was_off_now_on("fishing_activity"):
+        return
+    if key == "fishing_activity":
         from services.fetchers.geo import fetch_fishing_activity
 
         fetch_fishing_activity()
-        refreshed = True
         logger.info("Fishing activity loaded (layer enabled)")
+        return
+    raise KeyError(key)
 
-    if refreshed:
+
+def _run_slow_enable_fetches(keys: tuple[str, ...]) -> None:
+    from services.fetchers._store import bump_data_version
+
+    for key in keys:
+        try:
+            _slow_fetch(key)
+        except Exception:
+            logger.exception("Layer enable fetch failed for %s", key)
+    bump_data_version()
+
+
+def refresh_newly_enabled_layers(before: dict[str, bool]) -> None:
+    """Fetch any layers that transitioned off → on."""
+    from services.fetchers._store import bump_data_version
+
+    instant_keys: list[str] = []
+    slow_keys: list[str] = []
+
+    for key in _INSTANT_LAYER_KEYS | _SLOW_LAYER_KEYS:
+        if _was_off_now_on(before, key):
+            if key in _INSTANT_LAYER_KEYS:
+                instant_keys.append(key)
+            else:
+                slow_keys.append(key)
+
+    if not instant_keys and not slow_keys:
+        return
+
+    for key in instant_keys:
+        try:
+            _instant_fetch(key)
+        except Exception:
+            logger.exception("Layer enable fetch failed for %s", key)
+
+    if instant_keys:
         bump_data_version()
+
+    if slow_keys:
+        from services.data_fetcher import _SLOW_EXECUTOR
+
+        _SLOW_EXECUTOR.submit(_run_slow_enable_fetches, tuple(slow_keys))

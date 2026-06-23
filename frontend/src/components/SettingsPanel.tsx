@@ -2945,6 +2945,9 @@ function SarSettingsTab() {
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [disabling, setDisabling] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [earthdataUser, setEarthdataUser] = useState('');
+  const [earthdataToken, setEarthdataToken] = useState('');
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -2960,9 +2963,62 @@ function SarSettingsTab() {
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
   const products = (status?.products ?? {}) as Record<string, unknown>;
-  const modeBEnabled = !!products.enabled;
+  const tokenSet = Boolean(products.earthdata_token_set);
+  const fullyConfigured = Boolean(products.fully_configured);
+  const optInEnabled = Boolean(products.enabled);
+  const runtimeStoreExists = Boolean(products.runtime_store_exists);
   const catalogEnabled = !!(status?.catalog as Record<string, unknown>)?.enabled;
   const openclawEnabled = !!status?.openclaw_enabled;
+  const missing = Array.isArray(products.missing)
+    ? (products.missing as string[])
+    : [];
+
+  const modeBStatusLabel = (() => {
+    if (fullyConfigured) return 'Active — credentials configured';
+    if (optInEnabled && !tokenSet) return 'Opt-in on — Earthdata token missing';
+    if (tokenSet && !optInEnabled) return 'Token present — enable Mode B below';
+    return 'Not configured';
+  })();
+
+  const handleEnable = async () => {
+    if (earthdataToken.trim().length < 8) {
+      setActionMsg({ type: 'err', text: 'Earthdata token looks too short. Paste the full token string.' });
+      return;
+    }
+    setSubmitting(true);
+    setActionMsg(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/sar/mode-b/enable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          earthdata_user: earthdataUser.trim(),
+          earthdata_token: earthdataToken.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        let msg = `HTTP ${res.status}`;
+        const d = body?.detail;
+        if (typeof d === 'string') msg = d;
+        else if (Array.isArray(d) && d.length > 0) {
+          msg = d.map((item: { msg?: string; loc?: string[] }) => item?.msg || 'invalid').join('; ');
+        }
+        throw new Error(msg);
+      }
+      setEarthdataToken('');
+      setActionMsg({ type: 'ok', text: 'Mode B enabled. Credentials saved on this node.' });
+      await fetchStatus();
+    } catch (e) {
+      setActionMsg({
+        type: 'err',
+        text: e instanceof Error ? e.message : 'Failed to save SAR credentials',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const handleDisable = async () => {
     setDisabling(true);
@@ -2976,6 +3032,8 @@ function SarSettingsTab() {
         const body = await res.json().catch(() => ({}));
         throw new Error(typeof body?.detail === 'string' ? body.detail : `HTTP ${res.status}`);
       }
+      setEarthdataUser('');
+      setEarthdataToken('');
       setActionMsg({ type: 'ok', text: 'Mode B disabled. Credentials wiped.' });
       await fetchStatus();
     } catch (e) {
@@ -3015,10 +3073,14 @@ function SarSettingsTab() {
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${modeBEnabled ? 'bg-green-400' : 'bg-yellow-400'}`} />
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    fullyConfigured ? 'bg-green-400' : optInEnabled || tokenSet ? 'bg-yellow-400' : 'bg-gray-500'
+                  }`}
+                />
                 <span className="text-[11px]">
                   <span className="text-amber-300 font-bold">Mode B</span> (Anomalies):{' '}
-                  {modeBEnabled ? 'Active — credentials stored' : 'Not configured'}
+                  {modeBStatusLabel}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -3029,63 +3091,100 @@ function SarSettingsTab() {
                 </span>
               </div>
             </div>
+            {missing.length > 0 && !fullyConfigured && (
+              <p className="text-[10px] text-amber-200/60 pt-1">
+                Still needed: {missing.join(' · ')}
+              </p>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Mode B Controls */}
-      {modeBEnabled && (
-        <div className="mx-4 mt-3 p-3 border border-amber-900/20 bg-amber-950/5 space-y-3">
-          <p className="text-[11px] font-mono text-amber-300 font-bold tracking-wide">
-            MODE B CREDENTIALS
-          </p>
-          <p className="text-[11px] font-mono text-[var(--text-muted)]">
-            Earthdata credentials are stored server-side in{' '}
-            <span className="text-amber-400/80">backend/data/sar_runtime.json</span>.
-            Disabling Mode B wipes them from disk.
-          </p>
-          <div className="flex gap-2">
+      {/* Mode B credential entry — always visible */}
+      <div className="mx-4 mt-3 p-3 border border-amber-900/20 bg-amber-950/5 space-y-3">
+        <p className="text-[11px] font-mono text-amber-300 font-bold tracking-wide">
+          MODE B — EARTHDATA CREDENTIALS
+        </p>
+        <p className="text-[11px] font-mono text-[var(--text-muted)] leading-relaxed">
+          Free NASA Earthdata Login required for OPERA ground-change products. Paste your user
+          token below — stored only on this node
+          {runtimeStoreExists ? ' in the runtime credentials file' : ' (created on first save)'}.
+        </p>
+
+        <ol className="list-decimal list-inside space-y-1 text-[11px] font-mono text-[var(--text-secondary)]">
+          <li>
+            Register at{' '}
+            <a
+              href="https://urs.earthdata.nasa.gov/users/new"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-amber-400 underline hover:text-amber-300"
+            >
+              urs.earthdata.nasa.gov
+            </a>
+          </li>
+          <li>
+            Generate a user token from your{' '}
+            <a
+              href="https://urs.earthdata.nasa.gov/profile"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-amber-400 underline hover:text-amber-300"
+            >
+              Earthdata profile
+            </a>
+          </li>
+        </ol>
+
+        <div className="space-y-2">
+          <label htmlFor="sar-settings-earthdata-user" className="block text-[11px] text-amber-200/80">
+            Earthdata username (optional)
+          </label>
+          <input
+            id="sar-settings-earthdata-user"
+            type="text"
+            value={earthdataUser}
+            onChange={(e) => setEarthdataUser(e.target.value)}
+            placeholder="yourname"
+            autoComplete="off"
+            className="w-full rounded border border-amber-400/30 bg-zinc-900 px-3 py-2 text-xs text-amber-100 placeholder:text-amber-100/30 focus:border-amber-400/70 focus:outline-none cursor-text"
+          />
+
+          <label htmlFor="sar-settings-earthdata-token" className="block text-[11px] text-amber-200/80 mt-2">
+            Earthdata user token (required)
+          </label>
+          <input
+            id="sar-settings-earthdata-token"
+            type="password"
+            value={earthdataToken}
+            onChange={(e) => setEarthdataToken(e.target.value)}
+            placeholder={tokenSet ? '••••••••  (enter new token to rotate)' : 'eyJ0eXAiOiJKV1QiLCJhbGciOi...'}
+            autoComplete="off"
+            className="w-full rounded border border-amber-400/30 bg-zinc-900 px-3 py-2 text-xs text-amber-100 placeholder:text-amber-100/30 focus:border-amber-400/70 focus:outline-none font-mono cursor-text"
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void handleEnable()}
+            disabled={submitting || earthdataToken.trim().length < 8}
+            className="px-3 py-1.5 text-[10px] font-mono font-bold tracking-wide border border-amber-400/50 text-amber-200 hover:bg-amber-500/10 transition disabled:opacity-50"
+          >
+            {submitting ? 'SAVING...' : fullyConfigured ? 'UPDATE CREDENTIALS' : 'ENABLE MODE B'}
+          </button>
+          {(fullyConfigured || optInEnabled || tokenSet) && (
             <button
               type="button"
-              onClick={handleDisable}
+              onClick={() => void handleDisable()}
               disabled={disabling}
               className="px-3 py-1.5 text-[10px] font-mono font-bold tracking-wide border border-red-500/40 text-red-400 hover:bg-red-500/10 transition disabled:opacity-50"
             >
               {disabling ? 'DISABLING...' : 'REVOKE & DISABLE MODE B'}
             </button>
-          </div>
+          )}
         </div>
-      )}
-
-      {/* Setup Guide (when Mode B not active) */}
-      {!modeBEnabled && (
-        <div className="mx-4 mt-3 p-3 border border-amber-900/20 bg-amber-950/5 space-y-3">
-          <p className="text-[11px] font-mono text-amber-300 font-bold tracking-wide">
-            ENABLE MODE B
-          </p>
-          <p className="text-[11px] font-mono text-[var(--text-muted)]">
-            Mode B requires a free NASA Earthdata account. To set up:
-          </p>
-          <ol className="list-decimal list-inside space-y-1 text-[11px] font-mono text-[var(--text-secondary)]">
-            <li>
-              Register at{' '}
-              <a
-                href="https://urs.earthdata.nasa.gov/users/new"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-amber-400 underline hover:text-amber-300"
-              >
-                urs.earthdata.nasa.gov
-              </a>
-            </li>
-            <li>Generate a user token from your Earthdata profile page</li>
-            <li>
-              Toggle the <span className="text-white">SAR Ground-Change</span> layer ON
-              in the left panel — the first-run wizard will prompt for your token
-            </li>
-          </ol>
-        </div>
-      )}
+      </div>
 
       {/* Action feedback */}
       {actionMsg && (

@@ -56,4 +56,4 @@ def test_layer_enable_refresh_covers_cold_toggle_layers():
 
     source = inspect.getsource(layer_enable_refresh.refresh_newly_enabled_layers)
     for key in ("cctv", "firms", "power_plants", "psk_reporter", "datacenters"):
-        assert f'"{key}"' in source or f"'{key}'" in source
+        assert key in layer_enable_refresh._INSTANT_LAYER_KEYS | layer_enable_refresh._SLOW_LAYER_KEYS

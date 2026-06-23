@@ -15,13 +15,15 @@ def test_refresh_firms_on_enable_only():
     with (
         patch("services.fetchers.earth_observation.fetch_firms_fires") as firms,
         patch("services.fetchers.earth_observation.fetch_firms_country_fires") as country,
+        patch("services.layer_enable_refresh._run_slow_enable_fetches") as run_slow,
         patch("services.fetchers._store.bump_data_version") as bump,
     ):
         refresh_newly_enabled_layers({**before, "firms": False})
-
-    firms.assert_called_once()
-    country.assert_called_once()
-    bump.assert_called_once()
+        firms.assert_not_called()
+        country.assert_not_called()
+        run_slow.assert_called_once()
+        assert run_slow.call_args[0][0] == ("firms",)
+        bump.assert_not_called()
 
     active_layers["firms"] = before.get("firms", False)
 
@@ -34,3 +36,21 @@ def test_refresh_skips_when_layer_stays_off():
         refresh_newly_enabled_layers(before)
 
     fetch_cctv.assert_not_called()
+
+
+def test_refresh_cctv_runs_inline():
+    before = {**snapshot_active_layers(), "cctv": False}
+    active_layers["cctv"] = True
+
+    with (
+        patch("services.fetchers.infrastructure.fetch_cctv") as fetch_cctv,
+        patch("services.fetchers._store.bump_data_version") as bump,
+        patch("services.data_fetcher._SLOW_EXECUTOR") as slow_exec,
+    ):
+        refresh_newly_enabled_layers(before)
+
+    fetch_cctv.assert_called_once()
+    bump.assert_called_once()
+    slow_exec.submit.assert_not_called()
+
+    active_layers["cctv"] = before.get("cctv", False)

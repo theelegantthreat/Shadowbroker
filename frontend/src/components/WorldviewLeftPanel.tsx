@@ -850,7 +850,9 @@ const WorldviewLeftPanel = React.memo(function WorldviewLeftPanel({
         });
         if (!res.ok || cancelled) return;
         const body = await res.json();
-        const modeBOn = Boolean(body?.products?.enabled);
+        const modeBOn = Boolean(
+          body?.products?.fully_configured ?? body?.products?.enabled,
+        );
         if (cancelled) return;
         if (modeBOn && sarChoice !== 'b_active') {
           try {
