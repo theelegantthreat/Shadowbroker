@@ -3927,7 +3927,9 @@ class LayerUpdate(BaseModel):
 async def update_layers(update: LayerUpdate, request: Request):
     """Receive frontend layer toggle state. Starts/stops streams accordingly."""
     from services.fetchers._store import active_layers, bump_active_layers_version, is_any_active
+    from services.layer_enable_refresh import refresh_newly_enabled_layers, snapshot_active_layers
 
+    layers_before = snapshot_active_layers()
     # Snapshot old stream states before applying changes
     old_ships = is_any_active(
         "ships_military", "ships_cargo", "ships_civilian", "ships_passenger", "ships_tracked_yachts"
@@ -3935,8 +3937,6 @@ async def update_layers(update: LayerUpdate, request: Request):
     old_mesh = is_any_active("sigint_meshtastic")
     old_aprs = is_any_active("sigint_aprs")
     old_viirs = is_any_active("viirs_nightlights")
-    old_datacenters = is_any_active("datacenters")
-    old_fishing = is_any_active("fishing_activity")
 
     # Update only known keys
     changed = False
@@ -3955,8 +3955,6 @@ async def update_layers(update: LayerUpdate, request: Request):
     new_mesh = is_any_active("sigint_meshtastic")
     new_aprs = is_any_active("sigint_aprs")
     new_viirs = is_any_active("viirs_nightlights")
-    new_datacenters = is_any_active("datacenters")
-    new_fishing = is_any_active("fishing_activity")
 
     # Start/stop AIS stream on transition
     if old_ships and not new_ships:
@@ -4012,17 +4010,7 @@ async def update_layers(update: LayerUpdate, request: Request):
         _queue_viirs_change_refresh()
         logger.info("VIIRS change refresh queued (layer enabled)")
 
-    if not old_datacenters and new_datacenters:
-        from services.fetchers.infrastructure import fetch_datacenters
-
-        fetch_datacenters()
-        logger.info("Datacenters loaded (layer enabled)")
-
-    if not old_fishing and new_fishing:
-        from services.fetchers.geo import fetch_fishing_activity
-
-        fetch_fishing_activity()
-        logger.info("Fishing activity refresh queued (layer enabled)")
+    refresh_newly_enabled_layers(layers_before)
 
     return {"status": "ok"}
 

@@ -143,8 +143,61 @@ import type {
   KiwiSDR,
   Scanner,
   TrackedFlight,
+  DashboardData,
 } from '@/types/dashboard';
-import { useDataSnapshot } from '@/hooks/useDataStore';
+import { useDataKeys } from '@/hooks/useDataStore';
+
+/** Keys the layer panel reads — avoids re-rendering on unrelated fast-poll keys. */
+const WORLDVIEW_PANEL_DATA_KEYS = [
+  'ships',
+  'sigint_totals',
+  'sigint',
+  'cctv_total',
+  'cctv',
+  'satnogs_total',
+  'satnogs_stations',
+  'tinygs_total',
+  'tinygs_satellites',
+  'tracked_flights',
+  'commercial_flights',
+  'private_flights',
+  'private_jets',
+  'military_flights',
+  'gps_jamming',
+  'fishing_activity',
+  'satellite_source',
+  'satellite_analysis',
+  'satellites',
+  'road_corridor_trends',
+  'earthquakes',
+  'firms_fires',
+  'ukraine_alerts',
+  'weather_alerts',
+  'volcanoes',
+  'air_quality',
+  'sar_anomalies',
+  'sar_scenes',
+  'uap_sightings',
+  'wastewater',
+  'datacenters',
+  'internet_outages',
+  'power_plants',
+  'military_bases',
+  'trains',
+  'malware_threats',
+  'scm_suppliers',
+  'cyber_threats',
+  'kiwisdr',
+  'psk_reporter',
+  'scanners',
+  'frontlines',
+  'gdelt',
+  'telegram_osint',
+  'crowdthreat',
+  'correlations',
+  'gt_risk',
+  'freshness',
+] as const satisfies readonly (keyof DashboardData)[];
 
 // ---------------------------------------------------------------------------
 // ScannerTracker — in-app audio player for tracked police scanner systems
@@ -699,7 +752,7 @@ const WorldviewLeftPanel = React.memo(function WorldviewLeftPanel({
   onOpenSarAoiEditor?: () => void;
   viewBoundsRef?: React.RefObject<{ south: number; west: number; north: number; east: number } | null>;
 }) {
-  const data = useDataSnapshot() as import('@/types/dashboard').DashboardData;
+  const data = useDataKeys(WORLDVIEW_PANEL_DATA_KEYS) as DashboardData;
   const { t } = useTranslation();
   const [internalMinimized, setInternalMinimized] = useState(true);
   const isMinimized = isMinimizedProp !== undefined ? isMinimizedProp : internalMinimized;

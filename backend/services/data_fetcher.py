@@ -479,24 +479,27 @@ def update_slow_data():
         fetch_military_bases,
         fetch_scanners,
         fetch_psk_reporter,
-        fetch_weather_alerts,
+        # weather_alerts + ukraine_alerts: owned by dedicated scheduler jobs
+        # (5 min and 2 min) — keep off slow tier to avoid duplicate upstream work.
         fetch_air_quality,
         fetch_fishing_activity,
         fetch_power_plants,
-        fetch_ukraine_air_raid_alerts,
         fetch_malware_threats,
         fetch_cyber_threats,
         fetch_scm_suppliers,
     ]
     _run_tasks("slow-tier", slow_funcs)
-    # Run correlation engine after all data is fresh
+    # Run correlation engine after all data is fresh (skip when overlay is off).
     try:
+        from services.fetchers._store import is_any_active
         from services.correlation_engine import compute_correlations
-        with _data_lock:
-            snapshot = dict(latest_data)
-        correlations = compute_correlations(snapshot)
-        with _data_lock:
-            latest_data["correlations"] = correlations
+
+        if is_any_active("correlations"):
+            with _data_lock:
+                snapshot = dict(latest_data)
+            correlations = compute_correlations(snapshot)
+            with _data_lock:
+                latest_data["correlations"] = correlations
     except Exception as e:
         logger.error("Correlation engine failed: %s", e)
     try:
