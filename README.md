@@ -1014,6 +1014,7 @@ The platform is optimized for handling massive real-time datasets:
 <details>
 <summary>📁 Project Structure</summary>
 
+New contributors can use [docs/contributor-map.md](docs/contributor-map.md) for a shorter orientation guide.
 
 ```
 Shadowbroker/
